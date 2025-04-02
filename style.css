@@ -1,0 +1,84 @@
+body {
+    background-color: #f8f9fa;
+}
+
+#upload-zone {
+    border-style: dashed !important;
+    border-color: #adb5bd !important;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+}
+
+#upload-zone:hover, #upload-zone.dragover {
+    background-color: #e9ecef;
+}
+
+#pdf-viewer img {
+    display: block;
+    margin: auto;
+    max-width: 100%;
+    transition: transform 0.2s ease;
+}
+
+.highlight {
+    background-color: yellow;
+}
+
+body {
+    background-color: #f8f9fa;
+}
+
+#upload-zone {
+    border-style: dashed !important;
+    border-color: #adb5bd !important;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+}
+
+#upload-zone:hover, #upload-zone.dragover {
+    background-color: #e9ecef;
+}
+
+#pdf-viewer img {
+    display: block; /* Changed from inline-block */
+    margin: 0 auto; /* Center the image */
+    max-width: 100%;
+    max-height: 100%; /* Ensure image fits vertically */
+    transition: transform 0.2s ease;
+    object-fit: contain; /* Scale while preserving aspect ratio */
+}
+
+#pdf-viewer {
+     display: flex; /* Use flexbox for centering */
+     align-items: center; /* Center vertically */
+     justify-content: center; /* Center horizontally */
+}
+
+
+.highlight {
+    background-color: yellow;
+    font-weight: bold;
+}
+
+#toc-list .list-group-item {
+    font-size: 0.9rem;
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
+}
+#toc-list .list-group-item.active {
+    background-color: #0d6efd;
+    color: white;
+    font-weight: bold;
+}
+
+/* Ensure analysis output respects whitespace and newlines */
+#analysis-output {
+    white-space: pre-wrap; /* Preserves whitespace and wraps lines */
+    word-wrap: break-word; /* Breaks long words */
+}
+
+.accordion-button:not(.collapsed) {
+    color: #0c63e4;
+    background-color: #e7f1ff;
+}
+
