@@ -1,608 +1,6 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs';
 
-// Configure PDF.js worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
-
-// --- DOM Elements ---
-const uploadContainer = document.getElementById('upload-container');
-const uploadZone = document.getElementById('upload-zone');
-const pdfUploadInput = document.getElementById('pdf-upload');
-const fileInfo = document.getElementById('file-info');
-const fileNameEl = document.getElementById('file-name');
-const fileSizeEl = document.getElementById('file-size');
-const pageCountEl = document.getElementById('page-count');
-const processingProgress = document.getElementById('processing-progress');
-const progressBar = document.getElementById('progress-bar');
-const currentPageEl = document.getElementById('current-page');
-const totalPagesEl = document.getElementById('total-pages');
-const statusMessageEl = document.getElementById('status-message');
-
-const resultsContainer = document.getElementById('results-container');
-const tocList = document.getElementById('toc-list');
-const pdfViewer = document.getElementById('pdf-viewer');
-const pageImage = document.getElementById('page-image');
-const prevPageBtn = document.getElementById('prev-page');
-const nextPageBtn = document.getElementById('next-page');
-const currentPageDisplay = document.getElementById('current-page-display');
-const totalPagesDisplay = document.getElementById('total-pages-display');
-const jumpToPageInput = document.getElementById('jump-to-page-input');
-const jumpToPageBtn = document.getElementById('jump-to-page-btn');
-const analysisOutput = document.getElementById('analysis-output');
-const searchInput = document.getElementById('search-input');
-const searchButton = document.getElementById('search-button');
-const zoomInBtn = document.getElementById('zoom-in');
-const zoomOutBtn = document.getElementById('zoom-out');
-const resetZoomBtn = document.getElementById('reset-zoom');
-const exportPageMdBtn = document.getElementById('export-page-md');
-const exportAllMdBtn = document.getElementById('export-all-md');
-const downloadPageImageBtn = document.getElementById('download-page-image');
-
-
-// --- State Variables ---
-let pdfDoc = null;
-let currentPageNum = 1;
-let pageAnalyses = []; // Array to store { pageNum: number, imageDataUrl: string, analysis: string, summary: string }
-let currentScale = 1.0;
-const MAX_FILE_SIZE_MB = 50;
-const DPI = 300; // Target DPI for rendering
-
-// --- Event Listeners ---
-
-// Upload Zone Click
-uploadZone.addEventListener('click', () => pdfUploadInput.click());
-
-// File Input Change
-pdfUploadInput.addEventListener('change', (event) => {
-    const file = event.target.files[0];
-    if (file) {
-        handleFileUpload(file);
-    }
-});
-
-// Drag and Drop
-uploadZone.addEventListener('dragover', (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    uploadZone.classList.add('dragover');
-});
-
-uploadZone.addEventListener('dragleave', (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    uploadZone.classList.remove('dragover');
-});
-
-uploadZone.addEventListener('drop', (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    uploadZone.classList.remove('dragover');
-    const file = event.dataTransfer.files[0];
-    if (file && file.type === 'application/pdf') {
-        handleFileUpload(file);
-    } else {
-        alert('Please drop a PDF file.');
-    }
-});
-
-// Page Navigation
-prevPageBtn.addEventListener('click', showPrevPage);
-nextPageBtn.addEventListener('click', showNextPage);
-jumpToPageBtn.addEventListener('click', jumpToPage);
-
-// Search
-searchButton.addEventListener('click', performSearch);
-searchInput.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') {
-        performSearch();
-    }
-});
-
-// Zoom Controls
-zoomInBtn.addEventListener('click', () => zoomImage(1.2));
-zoomOutBtn.addEventListener('click', () => zoomImage(1 / 1.2));
-resetZoomBtn.addEventListener('click', () => {
-    currentScale = 1.0;
-    pageImage.style.transform = `scale(${currentScale})`;
-     pageImage.style.cursor = 'zoom-in';
-});
-pageImage.addEventListener('click', () => zoomImage(1.5)); // Zoom in on click
-
-// Export Buttons
-exportPageMdBtn.addEventListener('click', exportCurrentPageMarkdown);
-exportAllMdBtn.addEventListener('click', exportAllMarkdown);
-downloadPageImageBtn.addEventListener('click', downloadCurrentImage);
-
-
-// --- Functions ---
-
-/**
- * Handles the uploaded PDF file.
- * @param {File} file The PDF file object.
- */
-async function handleFileUpload(file) {
-    if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
-        alert(`File size exceeds the limit of ${MAX_FILE_SIZE_MB}MB.`);
-        return;
-    }
-
-    // Reset state
-    pdfDoc = null;
-    currentPageNum = 1;
-    pageAnalyses = [];
-    tocList.innerHTML = '';
-    analysisOutput.innerHTML = 'Loading analysis...';
-    resultsContainer.style.display = 'none';
-    uploadContainer.style.display = 'none'; // Hide upload once processing starts
-    processingProgress.style.display = 'block';
-    fileInfo.style.display = 'block';
-
-
-    fileNameEl.textContent = file.name;
-    fileSizeEl.textContent = `${(file.size / 1024 / 1024).toFixed(2)} MB`;
-
-    updateProgress(0, 0, 0, 'Reading PDF...');
-
-    const fileReader = new FileReader();
-    fileReader.onload = async function() {
-        const typedarray = new Uint8Array(this.result);
-        try {
-            const loadingTask = pdfjsLib.getDocument({ data: typedarray });
-            pdfDoc = await loadingTask.promise;
-
-            pageCountEl.textContent = pdfDoc.numPages;
-            totalPagesEl.textContent = pdfDoc.numPages;
-            totalPagesDisplay.textContent = pdfDoc.numPages;
-            jumpToPageInput.max = pdfDoc.numPages;
-
-
-            // Start processing pages
-            await processAllPages();
-
-        } catch (error) {
-            console.error("Error loading PDF:", error);
-            alert(`Error loading PDF: ${error.message}`);
-            resetUI();
-        }
-    };
-    fileReader.readAsArrayBuffer(file);
-}
-
-/**
- * Processes all pages of the PDF: renders image and gets LLM analysis.
- */
-async function processAllPages() {
-    if (!pdfDoc) return;
-    const numPages = pdfDoc.numPages;
-
-     try {
-        for (let i = 1; i <= numPages; i++) {
-            updateProgress(i, numPages, (i / numPages) * 100, `Processing page ${i}...`);
-            statusMessageEl.textContent = `Rendering page ${i} image...`;
-            const imageDataUrl = await renderPageAsImage(i);
-
-            statusMessageEl.textContent = `Analyzing page ${i} with LLM...`;
-            const analysis = await getLLMAnalysis(imageDataUrl, i);
-
-            const summary = await getPageSummary(analysis, i); // Get a short summary for TOC
-
-
-            pageAnalyses.push({
-                pageNum: i,
-                imageDataUrl: imageDataUrl,
-                analysis: analysis || "Analysis failed for this page.",
-                summary: summary || `Page ${i}` // Fallback summary
-            });
-
-             // Update TOC dynamically
-            const tocItem = document.createElement('li');
-            tocItem.classList.add('list-group-item', 'list-group-item-action');
-            tocItem.style.cursor = 'pointer';
-            tocItem.dataset.page = i;
-            tocItem.textContent = `Page ${i}: ${pageAnalyses[i-1].summary}`;
-            tocItem.addEventListener('click', () => showPage(i));
-            tocList.appendChild(tocItem);
-
-            // Update progress after successful processing of a page
-            updateProgress(i, numPages, (i / numPages) * 100, `Page ${i} processed.`);
-
-             // Optional: Add a small delay to avoid overwhelming the browser/API
-            await new Promise(resolve => setTimeout(resolve, 100));
-        }
-
-        // Processing complete
-        updateProgress(numPages, numPages, 100, 'Processing complete!');
-        statusMessageEl.textContent = '';
-        processingProgress.style.display = 'none';
-        resultsContainer.style.display = 'block';
-        showPage(1); // Show the first page by default
-     } catch (error) {
-         console.error("Error during page processing:", error);
-         statusMessageEl.textContent = `Error processing page ${currentPageNum}: ${error.message}. Stopping.`;
-         alert(`An error occurred during processing: ${error.message}`);
-         // Optionally show partially processed results or reset
-          if (pageAnalyses.length > 0) {
-            resultsContainer.style.display = 'block';
-            showPage(1); // Show first available page
-          } else {
-            resetUI();
-          }
-     }
-}
-
-
-/**
- * Renders a specific PDF page to a high-resolution PNG image data URL.
- * @param {number} pageNum The page number to render.
- * @returns {Promise<string>} A promise that resolves with the image data URL.
- */
-async function renderPageAsImage(pageNum) {
-    try {
-        const page = await pdfDoc.getPage(pageNum);
-        const viewportBase = page.getViewport({ scale: 1.0 });
-        const scale = DPI / 72; // Calculate scale for target DPI (standard PDF DPI is 72)
-        const viewport = page.getViewport({ scale: scale });
-
-        const canvas = document.createElement('canvas');
-        const context = canvas.getContext('2d');
-        canvas.height = viewport.height;
-        canvas.width = viewport.width;
-
-        const renderContext = {
-            canvasContext: context,
-            viewport: viewport
-        };
-
-        await page.render(renderContext).promise;
-        return canvas.toDataURL('image/png'); // Use PNG for better quality
-    } catch (error) {
-        console.error(`Error rendering page ${pageNum}:`, error);
-        throw new Error(`Failed to render page ${pageNum}: ${error.message}`); // Propagate error
-    }
-}
-
-/**
- * Sends the page image to the LLM for analysis.
- * @param {string} imageDataUrl The data URL of the page image.
- * @param {number} pageNum The page number being analyzed.
- * @returns {Promise<string>} A promise that resolves with the LLM's analysis text.
- */
-async function getLLMAnalysis(imageDataUrl, pageNum) {
-    // --- LLM Integration Placeholder ---
-    console.log(`Simulating LLM call for page ${pageNum}`);
-    statusMessageEl.textContent = `Waiting for LLM analysis (page ${pageNum})...`;
-    await new Promise(resolve => setTimeout(resolve, 1500 + Math.random() * 1000)); // Simulate API call time
-
-     const prompt = `Provide a detailed analysis of this PDF page image (Page ${pageNum}). Describe all visible content including text, tables, charts, images, headers, footers, and formatting. Identify the main subject matter, key points, data presented, and any notable elements. Extract relevant text where possible.`;
-
-     try {
-        const completion = await websim.chat.completions.create({
-            messages: [
-                {
-                    role: "system",
-                    content: "You are an expert document analyzer. Your task is to meticulously describe the content and structure of the provided PDF page image.",
-                },
-                {
-                    role: "user",
-                    content: [
-                        { type: "text", text: prompt },
-                        { type: "image_url", image_url: { url: imageDataUrl } },
-                    ],
-                },
-            ],
-             // Adjust parameters as needed
-             // temperature: 0.2, // Factual response
-             // max_tokens: 1800, // Allow longer response
-        });
-        statusMessageEl.textContent = `LLM analysis received for page ${pageNum}.`;
-        return completion.content;
-     } catch (error) {
-        console.error(`LLM analysis failed for page ${pageNum}:`, error);
-        statusMessageEl.textContent = `LLM analysis failed for page ${pageNum}: ${error.message}`;
-        return `*Error analyzing page ${pageNum}: ${error.message}*`; // Return error message in analysis
-     }
-    // --- End Placeholder ---
-}
-
-/**
- * Generates a short summary for the Table of Contents using the LLM.
- * @param {string} fullAnalysis The full analysis text from the LLM.
- * @param {number} pageNum The page number.
- * @returns {Promise<string>} A promise that resolves with a short summary.
- */
-async function getPageSummary(fullAnalysis, pageNum) {
-    console.log(`Simulating LLM call for page ${pageNum} summary`);
-    statusMessageEl.textContent = `Generating summary for page ${pageNum}...`;
-
-    if (fullAnalysis.startsWith('*Error')) {
-        return `Page ${pageNum} (Analysis Error)`;
-    }
-
-    try {
-         const completion = await websim.chat.completions.create({
-            messages: [
-                {
-                    role: "system",
-                    content: "You are a summarization expert. Provide a very brief (5-10 words) summary or title for the following page analysis.",
-                },
-                {
-                    role: "user",
-                    content: `Summarize this analysis for a table of contents entry:\n\n${fullAnalysis.substring(0, 1000)}...` // Send only part of the analysis for summary
-                },
-            ],
-             // Adjust parameters if needed (e.g., lower max_tokens for summary)
-             // max_tokens: 50,
-        });
-        statusMessageEl.textContent = `Summary generated for page ${pageNum}.`;
-        return completion.content.trim().replace(/\.$/, ''); // Remove trailing period if any
-    } catch (error) {
-        console.error(`LLM summary failed for page ${pageNum}:`, error);
-        statusMessageEl.textContent = `LLM summary failed for page ${pageNum}: ${error.message}`;
-        return `Page ${pageNum} (Summary Error)`;
-    }
-}
-
-
-/**
- * Updates the display to show the specified page and its analysis.
- * @param {number} num The page number to display.
- */
-function showPage(num) {
-    if (!pdfDoc || num < 1 || num > pdfDoc.numPages || !pageAnalyses[num - 1]) {
-        return; // Invalid page number or data not ready
-    }
-    currentPageNum = num;
-
-    // Find the analysis data for the current page
-    const pageData = pageAnalyses.find(p => p.pageNum === currentPageNum);
-
-    if (!pageData) {
-        console.error(`Data for page ${currentPageNum} not found.`);
-        pageImage.src = ''; // Clear image
-        analysisOutput.innerHTML = 'Error: Analysis data not available for this page.';
-        return;
-    }
-
-
-    // Display image
-    pageImage.src = pageData.imageDataUrl;
-    pageImage.alt = `PDF Page ${currentPageNum}`;
-     resetZoomBtn.click(); // Reset zoom when changing pages
-
-    // Display analysis (potentially formatting Markdown later)
-    analysisOutput.innerHTML = pageData.analysis.replace(/\n/g, '<br>'); // Simple newline conversion for now
-
-    // Update UI elements
-    currentPageDisplay.textContent = currentPageNum;
-    jumpToPageInput.value = currentPageNum;
-
-
-    // Update button states
-    prevPageBtn.disabled = currentPageNum <= 1;
-    nextPageBtn.disabled = currentPageNum >= pdfDoc.numPages;
-
-    // Highlight active TOC item
-    document.querySelectorAll('#toc-list li').forEach(li => {
-        li.classList.remove('active');
-        if (parseInt(li.dataset.page) === currentPageNum) {
-            li.classList.add('active');
-            li.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        }
-    });
-
-    // Clear previous search highlights
-    clearSearchHighlights();
-}
-
-function showPrevPage() {
-    if (currentPageNum > 1) {
-        showPage(currentPageNum - 1);
-    }
-}
-
-function showNextPage() {
-    if (pdfDoc && currentPageNum < pdfDoc.numPages) {
-        showPage(currentPageNum + 1);
-    }
-}
-
-function jumpToPage() {
-    const pageNum = parseInt(jumpToPageInput.value);
-    if (!isNaN(pageNum) && pageNum >= 1 && pageNum <= pdfDoc.numPages) {
-        showPage(pageNum);
-    } else {
-        alert(`Please enter a valid page number between 1 and ${pdfDoc.numPages}.`);
-        jumpToPageInput.value = currentPageNum; // Reset input to current page
-    }
-}
-
-/**
- * Updates the progress bar and status message.
- * @param {number} current The current item being processed.
- * @param {number} total The total number of items.
- * @param {number} percentage The progress percentage.
- * @param {string} message The status message to display.
- */
-function updateProgress(current, total, percentage, message) {
-    currentPageEl.textContent = current;
-    totalPagesEl.textContent = total;
-    const clampedPercentage = Math.max(0, Math.min(100, percentage));
-    progressBar.style.width = `${clampedPercentage}%`;
-    progressBar.setAttribute('aria-valuenow', clampedPercentage);
-    progressBar.textContent = `${Math.round(clampedPercentage)}%`;
-     if (message) {
-        statusMessageEl.textContent = message;
-        console.log(message); // Also log progress
-    }
-}
-
-
-/**
- * Zooms the PDF page image.
- * @param {number} factor Zoom factor (e.g., 1.2 for zoom in, 1/1.2 for zoom out).
- */
-function zoomImage(factor) {
-    currentScale *= factor;
-    pageImage.style.transform = `scale(${currentScale})`;
-     pageImage.style.cursor = currentScale > 1 ? 'zoom-out' : 'zoom-in';
-}
-
-
-/**
- * Performs a text search across all analysis results.
- */
-function performSearch() {
-    const query = searchInput.value.trim().toLowerCase();
-    clearSearchHighlights(); // Clear previous highlights
-
-    if (!query) {
-        return; // No search term provided
-    }
-
-    const pageData = pageAnalyses.find(p => p.pageNum === currentPageNum);
-    if (pageData) {
-        highlightTextInNode(analysisOutput, query);
-    }
-}
-
-/**
- * Clears previous search highlights from the analysis output.
- */
-function clearSearchHighlights() {
-    const highlights = analysisOutput.querySelectorAll('span.highlight');
-    highlights.forEach(span => {
-        // Replace the span with its text content
-        const parent = span.parentNode;
-        parent.replaceChild(document.createTextNode(span.textContent), span);
-        parent.normalize(); // Merges adjacent text nodes
-    });
-}
-
-
-/**
- * Highlights occurrences of a query string within a DOM node.
- * @param {Node} node The DOM node to search within.
- * @param {string} query The search query (lowercase).
- */
-function highlightTextInNode(node, query) {
-    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT, null, false);
-    let textNode;
-    const nodesToProcess = [];
-
-    // Collect all text nodes first to avoid issues with modifying the DOM while iterating
-    while (textNode = walker.nextNode()) {
-        nodesToProcess.push(textNode);
-    }
-
-    nodesToProcess.forEach(textNode => {
-        const text = textNode.nodeValue.toLowerCase();
-        let startIndex = 0;
-        let index;
-
-        while ((index = text.indexOf(query, startIndex)) > -1) {
-            const match = textNode.nodeValue.substring(index, index + query.length);
-            const highlightSpan = document.createElement('span');
-            highlightSpan.className = 'highlight';
-            highlightSpan.textContent = match;
-
-            // Split the text node to insert the highlight span
-            const textAfter = textNode.splitText(index); // Splits into textNode and textAfter
-            textAfter.nodeValue = textAfter.nodeValue.substring(query.length); // Remove matched text from the second part
-            textNode.parentNode.insertBefore(highlightSpan, textAfter); // Insert highlight before the second part
-
-            // Continue searching in the remaining part of the text
-            textNode = textAfter; // Update textNode to the part after the highlight
-            startIndex = 0; // Reset start index for the new text node part
-        }
-    });
-}
-
-
-/**
- * Resets the UI to the initial upload state.
- */
-function resetUI() {
-    uploadContainer.style.display = 'block';
-    processingProgress.style.display = 'none';
-    resultsContainer.style.display = 'none';
-    fileInfo.style.display = 'none';
-    pdfUploadInput.value = ''; // Clear file input
-    fileNameEl.textContent = '';
-    fileSizeEl.textContent = '';
-    pageCountEl.textContent = '';
-    progressBar.style.width = '0%';
-    progressBar.setAttribute('aria-valuenow', 0);
-    progressBar.textContent = '0%';
-    statusMessageEl.textContent = '';
-    tocList.innerHTML = '';
-    pageImage.src = '';
-    analysisOutput.innerHTML = '';
-    searchInput.value = '';
-}
-
-
-// --- Export Functions ---
-
-function exportCurrentPageMarkdown() {
-    const pageData = pageAnalyses.find(p => p.pageNum === currentPageNum);
-    if (!pageData) return;
-
-    const markdownContent = `## Page ${pageData.pageNum}\n\n**Analysis:**\n\n${pageData.analysis}\n`;
-    downloadFile(markdownContent, `pdf_analysis_page_${pageData.pageNum}.md`, 'text/markdown');
-}
-
-function exportAllMarkdown() {
-     if (pageAnalyses.length === 0) {
-         alert("No analysis data to export.");
-         return;
-     }
-    let fullMarkdown = `# PDF Analysis Report\n\n`;
-    pageAnalyses.forEach(pageData => {
-        fullMarkdown += `## Page ${pageData.pageNum}: ${pageData.summary}\n\n**Analysis:**\n\n${pageData.analysis}\n\n---\n\n`;
-    });
-     const pdfName = fileNameEl.textContent.replace('.pdf', '') || 'analysis';
-    downloadFile(fullMarkdown, `${pdfName}_full_analysis.md`, 'text/markdown');
-}
-
-function downloadCurrentImage() {
-     const pageData = pageAnalyses.find(p => p.pageNum === currentPageNum);
-    if (!pageData || !pageData.imageDataUrl) return;
-
-     const link = document.createElement('a');
-     link.href = pageData.imageDataUrl;
-      const pdfName = fileNameEl.textContent.replace('.pdf', '') || 'page';
-     link.download = `${pdfName}_page_${pageData.pageNum}.png`;
-     document.body.appendChild(link);
-     link.click();
-     document.body.removeChild(link);
-}
-
-/**
- * Helper function to trigger file download.
- * @param {string} content The file content.
- * @param {string} filename The desired filename.
- * @param {string} contentType The MIME type of the file.
- */
-function downloadFile(content, filename, contentType) {
-    const blob = new Blob([content], { type: contentType });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-}
-
-// --- Initial UI State ---
-resetUI(); // Ensure UI starts clean
-uploadContainer.style.display = 'block'; // Show upload initially
-
-
-import * as pdfjsLib from 'pdfjs-dist';
-import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs';
-
 // --- Polyfill if necessary (older browsers might need this for requestIdleCallback) ---
 window.requestIdleCallback = window.requestIdleCallback || function (cb) {
     var start = Date.now();
@@ -1058,8 +456,16 @@ function showPage(num) {
              // Handle lists (simple approach)
             .replace(/^\* (.*$)/gim, '<li>$1</li>')
             .replace(/^\d+\. (.*$)/gim, '<li>$1</li>')
-            .replace(/(<li>.*<\/li>\s*)+/g, match => `<ul>${match}</ul>`) // Wrap adjacent list items
-            // .replace(/\n/g, '<br>'); // Keep pre-wrap for better newline handling
+             // Wrap adjacent generated list items in appropriate list tag
+             // This regex needs refinement to handle nested lists or mixed lists correctly
+            .replace(/(?:<ul>)?(<li>.*<\/li>\s*)+(?:<\/ul>)?/g, (match, p1) => {
+                // Crude check for numbered list start
+                 if (match.match(/<li>\d+\./)) {
+                     return `<ol>${match.replace(/<li>\d+\.\s*/g, '<li>').replace(/<\/li>\s*<li>/g,'</li><li>')}</ol>`;
+                 } else {
+                    return `<ul>${match.replace(/<li>\*\s*/g, '<li>').replace(/<\/li>\s*<li>/g,'</li><li>')}</ul>`;
+                 }
+            });
 
         analysisOutput.innerHTML = formattedAnalysis; // Use innerHTML as we generated HTML tags
         exportPageMdBtn.disabled = false;
@@ -1165,19 +571,21 @@ function performSearch() {
     let totalMatches = 0;
 
     pageAnalyses.forEach(pageData => {
+        let pageHasMatch = false;
         if (pageData.analysis && pageData.analysis.toLowerCase().includes(query)) {
             searchResultPages.push(pageData.pageNum);
+            pageHasMatch = true;
             // Count matches on the page (simple count, might not be accurate for overlapping)
-             const matchesOnPage = (pageData.analysis.toLowerCase().match(new RegExp(query, 'g')) || []).length;
+             const matchesOnPage = (pageData.analysis.toLowerCase().match(new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length; // Escape regex special chars
              totalMatches += matchesOnPage;
         }
         // Update TOC highlighting for this page
-        updateTocItem(pageData.pageNum);
+        updateTocItem(pageData.pageNum); // updateTocItem now handles adding/removing bg-warning
     });
 
     // Display summary
     if (searchResultPages.length > 0) {
-        searchResultsSummary.textContent = `Found ${totalMatches} match(es) on ${searchResultPages.length} page(s). Use TOC highlighting or Prev/Next Result buttons.`; // Add buttons later if needed
+        searchResultsSummary.textContent = `Found ${totalMatches} match(es) on ${searchResultPages.length} page(s). Use TOC highlighting.`; // Removed suggestion for non-existent buttons
         searchResultsSummary.style.display = 'block';
          // Highlight current page if it's a result
          if (searchResultPages.includes(currentPageNum)) {
@@ -1204,9 +612,9 @@ function clearSearch() {
     currentSearchQuery = '';
     searchResultPages = [];
     searchResultsSummary.style.display = 'none';
-    clearSearchHighlights(true); // Clear visual highlights
+    clearSearchHighlights(true); // Clear visual highlights and reset state
     clearSearchButton.disabled = true;
-     // Clear TOC highlights
+     // Clear TOC highlights explicitly after resetting state
     document.querySelectorAll('#toc-list li.bg-warning').forEach(li => li.classList.remove('bg-warning'));
 }
 
@@ -1240,6 +648,10 @@ function clearSearchHighlights(resetSearchState = true) {
 
 /** Highlights text in a DOM node (more robust). */
 function highlightTextInNode(node, query) {
+    if (!query) return; // Don't highlight if query is empty
+    const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // Escape regex special characters
+    const regex = new RegExp(`(${escapedQuery})`, 'gi'); // Create case-insensitive regex
+
     const treeWalker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT, {
         acceptNode: function (node) {
             // Skip nodes within script/style tags or already highlighted spans
@@ -1248,10 +660,14 @@ function highlightTextInNode(node, query) {
                 node.parentElement.classList.contains('highlight')) {
                 return NodeFilter.FILTER_REJECT;
             }
-            // Check if the node's text content contains the query (case-insensitive)
-            if (node.nodeValue.toLowerCase().includes(query)) {
+            // Check if the node's text content contains the query (using regex)
+            if (regex.test(node.nodeValue)) {
+                 // Reset regex lastIndex before testing again
+                 regex.lastIndex = 0;
                 return NodeFilter.FILTER_ACCEPT;
             }
+             // Reset regex lastIndex even if no match
+             regex.lastIndex = 0;
             return NodeFilter.FILTER_SKIP;
         }
     }, false);
@@ -1263,32 +679,33 @@ function highlightTextInNode(node, query) {
 
     nodesToHighlight.forEach(textNode => {
         const text = textNode.nodeValue;
-        const lcText = text.toLowerCase();
-        let startIndex = 0;
-        let index;
         const fragment = document.createDocumentFragment();
         let lastIndex = 0;
+        let match;
+        regex.lastIndex = 0; // Ensure regex starts from the beginning for each node
 
-        while ((index = lcText.indexOf(query, startIndex)) > -1) {
+
+        while ((match = regex.exec(text)) !== null) {
             // Add text before the match
-            fragment.appendChild(document.createTextNode(text.substring(lastIndex, index)));
+            fragment.appendChild(document.createTextNode(text.substring(lastIndex, match.index)));
 
             // Add the highlighted match
-            const match = text.substring(index, index + query.length);
             const highlightSpan = document.createElement('span');
             highlightSpan.className = 'highlight';
-            highlightSpan.textContent = match;
+            highlightSpan.textContent = match[0]; // match[0] is the full matched text
             fragment.appendChild(highlightSpan);
 
-            lastIndex = index + query.length;
-            startIndex = lastIndex; // Continue search after the match
+            lastIndex = regex.lastIndex;
         }
 
-        // Add any remaining text after the last match
-        fragment.appendChild(document.createTextNode(text.substring(lastIndex)));
+         // Add any remaining text after the last match
+        if(lastIndex < text.length) {
+           fragment.appendChild(document.createTextNode(text.substring(lastIndex)));
+        }
+
 
         // Replace the original text node with the fragment containing highlights
-         if (textNode.parentNode) { // Ensure node is still attached
+         if (textNode.parentNode && fragment.childNodes.length > 0) { // Ensure node is still attached and fragment is not empty
             textNode.parentNode.replaceChild(fragment, textNode);
          }
     });
@@ -1357,7 +774,7 @@ function exportCurrentPageMarkdown() {
     }
 
     const markdownContent = `## Page ${pageData.pageNum} Analysis (${fileNameEl.textContent})\n\n${pageData.analysis}\n`;
-    const safeFileName = (pdfFile?.name || 'pdf_analysis').replace('.pdf', '');
+    const safeFileName = (pdfFile?.name || 'pdf_analysis').replace(/\.pdf$/i, ''); // More robust extension removal
     downloadFile(markdownContent, `${safeFileName}_page_${pageData.pageNum}.md`, 'text/markdown;charset=utf-8');
 }
 
@@ -1374,12 +791,15 @@ function exportAllMarkdown() {
         fullMarkdown += `## Page ${pageData.pageNum}: ${pageData.summary || 'N/A'}\n\n`;
         if (pageData.analysis) {
             fullMarkdown += `${pageData.analysis}\n\n`;
-            pagesProcessed++;
-        } else if (pageData.error) {
+             if (!pageData.error && !pageData.analysis.includes('failed')) { // Count only fully successful pages
+                pagesProcessed++;
+            }
+        }
+        if (pageData.error) { // Add error message regardless of analysis content
             fullMarkdown += `*Error processing this page: ${pageData.error}*\n\n`;
             pagesWithErrors.push(pageData.pageNum);
-        } else {
-             fullMarkdown += `*Analysis not available for this page.*\n\n`;
+        } else if (!pageData.analysis) {
+             fullMarkdown += `*Analysis not available or not yet complete for this page.*\n\n`;
         }
         fullMarkdown += `---\n\n`;
     });
@@ -1387,12 +807,16 @@ function exportAllMarkdown() {
     if (pagesWithErrors.length > 0) {
         fullMarkdown += `**Note:** Errors occurred during analysis for page(s): ${pagesWithErrors.join(', ')}.\n`;
     }
-     if (pagesProcessed === 0) {
+     if (pagesProcessed === 0 && pagesWithErrors.length === pageAnalyses.length) {
          showErrorModal("No pages were successfully analyzed to export.");
          return;
+     } else if (pagesProcessed === 0) {
+         // Still allow export if some pages are pending but none finished successfully
+          console.warn("Exporting with no fully successful pages, but some pending/failed.");
      }
 
-    const safeFileName = (pdfFile?.name || 'pdf_analysis').replace('.pdf', '');
+
+    const safeFileName = (pdfFile?.name || 'pdf_analysis').replace(/\.pdf$/i, '');
     downloadFile(fullMarkdown, `${safeFileName}_full_analysis.md`, 'text/markdown;charset=utf-8');
 }
 
@@ -1406,7 +830,7 @@ function downloadCurrentImage() {
 
      const link = document.createElement('a');
      link.href = pageData.imageDataUrl;
-     const safeFileName = (pdfFile?.name || 'page').replace('.pdf', '');
+     const safeFileName = (pdfFile?.name || 'page').replace(/\.pdf$/i, '');
      link.download = `${safeFileName}_page_${pageData.pageNum}.png`;
      document.body.appendChild(link);
      link.click();
@@ -1417,14 +841,22 @@ function downloadCurrentImage() {
 function downloadFile(content, filename, contentType) {
     try {
         const blob = new Blob([content], { type: contentType });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        // IE/Edge specific handling (optional)
+        if (window.navigator && window.navigator.msSaveOrOpenBlob) {
+            window.navigator.msSaveOrOpenBlob(blob, filename);
+        } else {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a); // Append required for Firefox
+            a.click();
+            // Cleanup
+             setTimeout(() => {
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }, 100);
+        }
     } catch (e) {
          console.error("Download failed:", e);
          showErrorModal(`Failed to initiate download: ${e.message}`);
@@ -1433,5 +865,3 @@ function downloadFile(content, filename, contentType) {
 
 // --- Initial UI State ---
 resetUI(); // Ensure UI starts clean
-
-
