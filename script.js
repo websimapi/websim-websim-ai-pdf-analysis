@@ -55,8 +55,9 @@ const searchInput = document.getElementById('search-input');
 const searchButton = document.getElementById('search-button');
 const clearSearchButton = document.getElementById('clear-search-button');
 const searchResultsSummary = document.getElementById('search-results-summary');
-const errorModal = new bootstrap.Modal(document.getElementById('errorModal'));
+const errorModalElement = document.getElementById('errorModal'); // Get the element first
 const errorModalBody = document.getElementById('errorModalBody');
+let errorModal; // Initialize later
 
 // --- State ---
 let pdfDoc = null;
@@ -75,8 +76,13 @@ let currentAnalysisTask = null; // Track the current LLM call
 // --- Error Handling ---
 function showErrorModal(message) {
     console.error("Error:", message);
-    errorModalBody.textContent = message;
-    errorModal.show();
+    if (errorModal) { // Check if modal is initialized
+        errorModalBody.textContent = message;
+        errorModal.show();
+    } else {
+        // Fallback if modal initialization failed somehow
+        alert(`Error: ${message}`);
+    }
     // Optionally reset UI state
     resetUI();
 }
@@ -300,7 +306,6 @@ async function analyzePage(pageNum, imageDataUrl) {
     }
 }
 
-
 // --- Background Processing Queue ---
 async function processQueue() {
     if (isProcessing || processingQueue.length === 0) {
@@ -492,6 +497,7 @@ function updateTocItem(pageNum, analysisText) {
     }
 }
 
+// ... rest of the functions remain the same ...
 
 function changePage(delta) {
     const newPage = currentPageNum + delta;
@@ -515,6 +521,7 @@ function jumpToPage() {
     }
 }
 
+// ... rest of the functions remain the same ...
 
 function adjustZoom(factor) {
     currentZoom = Math.max(0.1, Math.min(5, currentZoom * factor)); // Limit zoom levels
@@ -580,6 +587,7 @@ function exportAllMarkdown() {
     downloadFile(filename, fullAnalysis, 'text/markdown');
 }
 
+// ... rest of the functions remain the same ...
 
 function downloadPageImage() {
     const imageDataUrl = pageImageCache[currentPageNum];
@@ -686,76 +694,85 @@ function highlightSearchTerms() {
      }
 }
 
-
-
 // --- Event Listeners ---
-uploadZone.addEventListener('click', () => pdfUpload.click()); // Make the zone clickable
+function setupEventListeners() {
+    uploadZone.addEventListener('click', () => pdfUpload.click()); // Make the zone clickable
 
-uploadZone.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    uploadZone.classList.add('dragover');
-});
+    uploadZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        uploadZone.classList.add('dragover');
+    });
 
-uploadZone.addEventListener('dragleave', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    uploadZone.classList.remove('dragover');
-});
+    uploadZone.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        uploadZone.classList.remove('dragover');
+    });
 
-uploadZone.addEventListener('drop', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    uploadZone.classList.remove('dragover');
-    const files = e.dataTransfer.files;
-    if (files.length > 0) {
-        handleFileSelect(files[0]);
-    }
-});
+    uploadZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        uploadZone.classList.remove('dragover');
+        const files = e.dataTransfer.files;
+        if (files.length > 0) {
+            handleFileSelect(files[0]);
+        }
+    });
 
-pdfUpload.addEventListener('change', (e) => {
-    if (e.target.files.length > 0) {
-        handleFileSelect(e.target.files[0]);
-    }
-});
+    pdfUpload.addEventListener('change', (e) => {
+        if (e.target.files.length > 0) {
+            handleFileSelect(e.target.files[0]);
+        }
+    });
 
-prevPageBtn.addEventListener('click', () => changePage(-1));
-nextPageBtn.addEventListener('click', () => changePage(1));
-jumpToPageBtn.addEventListener('click', jumpToPage);
-jumpToPageInput.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') {
-        jumpToPage();
-    }
-});
+    prevPageBtn.addEventListener('click', () => changePage(-1));
+    nextPageBtn.addEventListener('click', () => changePage(1));
+    jumpToPageBtn.addEventListener('click', jumpToPage);
+    jumpToPageInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            jumpToPage();
+        }
+    });
 
-zoomInBtn.addEventListener('click', () => adjustZoom(1.2));
-zoomOutBtn.addEventListener('click', () => adjustZoom(1 / 1.2));
-resetZoomBtn.addEventListener('click', resetZoom);
-// Add zoom on image click (toggle zoom out if zoomed)
-pageImage.addEventListener('click', () => {
-    if (currentZoom > 1) {
-        resetZoom();
-    } else {
-        adjustZoom(1.5); // Or a different factor for click-zoom
-    }
-});
+    zoomInBtn.addEventListener('click', () => adjustZoom(1.2));
+    zoomOutBtn.addEventListener('click', () => adjustZoom(1 / 1.2));
+    resetZoomBtn.addEventListener('click', resetZoom);
+    // Add zoom on image click (toggle zoom out if zoomed)
+    pageImage.addEventListener('click', () => {
+        if (currentZoom > 1) {
+            resetZoom();
+        } else {
+            adjustZoom(1.5); // Or a different factor for click-zoom
+        }
+    });
 
+    exportPageMdBtn.addEventListener('click', exportPageMarkdown);
+    exportAllMdBtn.addEventListener('click', exportAllMarkdown);
+    downloadPageImageBtn.addEventListener('click', downloadPageImage);
 
-exportPageMdBtn.addEventListener('click', exportPageMarkdown);
-exportAllMdBtn.addEventListener('click', exportAllMarkdown);
-downloadPageImageBtn.addEventListener('click', downloadPageImage);
-
-searchButton.addEventListener('click', highlightSearchTerms);
-searchInput.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') {
-        highlightSearchTerms();
-    }
-});
-clearSearchButton.addEventListener('click', () => {
-     searchInput.value = ''; // Clear the input field
-     clearSearchHighlights();
-});
-
+    searchButton.addEventListener('click', highlightSearchTerms);
+    searchInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            highlightSearchTerms();
+        }
+    });
+    clearSearchButton.addEventListener('click', () => {
+         searchInput.value = ''; // Clear the input field
+         clearSearchHighlights();
+    });
+}
 
 // --- Initial Setup ---
-resetUI(); // Start with a clean slate
+// Wrap initialization that depends on the DOM in a DOMContentLoaded listener
+document.addEventListener('DOMContentLoaded', () => {
+    // Initialize the Bootstrap modal instance only after DOM is ready
+    if (errorModalElement) {
+      errorModal = new bootstrap.Modal(errorModalElement);
+    } else {
+      console.error("Error Modal element not found!");
+    }
+
+    setupEventListeners(); // Setup event listeners after DOM is ready
+    resetUI(); // Start with a clean slate
+});
