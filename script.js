@@ -1,5 +1,9 @@
 import * as pdfjsLib from 'pdfjs-dist';
-import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs';
+// Remove the incorrect worker import
+// import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs';
+
+// Configure the worker source using the path from the import map
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdfjs-dist/build/pdf.worker.min.mjs';
 
 // --- Polyfill if necessary (older browsers might need this for requestIdleCallback) ---
 window.requestIdleCallback = window.requestIdleCallback || function (cb) {
